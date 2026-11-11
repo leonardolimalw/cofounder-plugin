@@ -1,0 +1,38 @@
+servers:
+  web:
+    hosts:
+      - <%= ENV['INFRA_WEB_IP'] %> # provision job exports web VM IP address INFRA_WEB_IP
+  workers: # only needed if using workers
+    hosts:
+      - <%= ENV['INFRA_WORKER_IP_0'] %> # provision job exports INFRA_WORKER_IP_0, INFRA_WORKER_IP_1, etc.
+      - <%= ENV['INFRA_WORKER_IP_1'] %>
+
+env:
+  clear:
+    APP_ENV: production
+    BASE_URL: https://example.com # for apex domains, BASE_URL is the bare domain; fall back to https://<%= ENV['INFRA_WEB_IP'] %>.nip.io if no domain configured
+  secret:
+    - MY_SECRET # common secrets, obtained from .kamal/secrets-common
+    - DATABASE_URL # obtained from .kamal/secrets.<environment> eg .kamal/secrets.production
+
+proxy:
+  # For apex domains, use hosts (array) to include both bare and www.
+  # The app must redirect www to the bare domain (see SKILL.md).
+  hosts:
+    - example.com
+    - www.example.com
+  # For subdomains (e.g., app.example.com), a single host is sufficient:
+  #   host: app.example.com
+  ssl: true # when true, make sure the above domain(s) point to the web VM IP
+
+accessories:
+  db:
+    image: supabase/postgres:17.11.0.007 # see references/postgres-recipe.md
+    host: <%= ENV['INFRA_DB_IP'] %> # provision job exports accessory IP address INFRA_<accessory_name>_IP
+    port: "5432:5432"
+    cmd: "postgres -D /etc/postgresql -c shared_buffers=1GB -c effective_cache_size=3GB -c work_mem=10MB -c maintenance_work_mem=256MB -c max_connections=100" # see references/postgres-recipe.md, use scripts/generate_pg_cmd.py to generate
+    env:
+      secret:
+        - POSTGRES_PASSWORD # expose ONLY this secret when using supabase/postgres image. User and db are always postgres
+    directories:
+      - /data/pgdata:/var/lib/postgresql/data # volume mount for accessory. Always mount at /data/<subdir>

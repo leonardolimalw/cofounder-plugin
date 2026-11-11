@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>cofounder</title>
+  <rect width="512" height="512" rx="112" fill="#FF1C44"/>
+  <g fill="none" stroke="#FFFFFF" stroke-linecap="round">
+    <path d="M 263.5 181.5 A 104 104 0 1 0 263.5 330.5" stroke-width="48"/>
+    <circle cx="364" cy="296" r="50" stroke-width="40"/>
+  </g>
+</svg>

@@ -1,0 +1,4 @@
+# Public GitHub CLI apt key fingerprints (GH_KEY_FINGERPRINTS in install.sh),
+# flagged as generic-api-key in the commits before "# gitleaks:allow" was added.
+810b687eff0593d625c9c80e31c401ecf4d0b40e:skills/cofounder-computer-setup/scripts/install.sh:generic-api-key:330
+826ebd60e488d041713b255f384269dba89b0fd9:skills/cofounder-computer-setup/scripts/install.sh:generic-api-key:330

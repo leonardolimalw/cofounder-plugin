@@ -1,0 +1,9 @@
+{
+  "name": "cofounder",
+  "description": "Um cofundador que ajuda a desenvolver e publicar aplicações web.",
+  "version": "0.28.0",
+  "author": {
+    "name": "Locaweb"
+  },
+  "icon": "./shared/brand/icon-512.png"
+}

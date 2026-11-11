@@ -1,0 +1,182 @@
+# supabase/postgres Accessory Recipe
+
+Recipe for deploying the `supabase/postgres` image — a Postgres container image enriched with several extensions, as recommended by the **tech-stack** skill. Every section documents a non-obvious behavior discovered through iteration. Follow this recipe exactly to avoid re-learning these lessons.
+
+## Table of Contents
+
+- [supabase/postgres Accessory Recipe](#supabasepostgres-accessory-recipe)
+  - [Table of Contents](#table-of-contents)
+  - [Complete Accessory Recipe](#complete-accessory-recipe)
+  - [The `-D /etc/postgresql` Flag](#the--d-etcpostgresql-flag)
+  - [Volume Mount: `/data/pgdata`, Not `/data/`](#volume-mount-datapgdata-not-data)
+  - [Container Env: Only `POSTGRES_PASSWORD`](#container-env-only-postgres_password)
+  - [DATABASE\_URL Derived from POSTGRES\_PASSWORD](#database_url-derived-from-postgres_password)
+  - [Tuning with `generate_pg_cmd.py`](#tuning-with-generate_pg_cmdpy)
+    - [Tuning algorithm](#tuning-algorithm)
+  - [Plan-to-RAM Mapping Table](#plan-to-ram-mapping-table)
+  - [Sync with Workflow](#sync-with-workflow)
+
+## Complete Accessory Recipe
+
+The full accessory definition goes in the environment-specific config (`config/deploy.<env>.yml`):
+
+```yaml
+# config/deploy.preview.yml
+accessories:
+  db:
+    image: supabase/postgres:17.11.0.007
+    host: <%= ENV['INFRA_DB_IP'] %>
+    port: "5432:5432"
+    cmd: "postgres -D /etc/postgresql -c shared_buffers=1GB -c effective_cache_size=3GB -c work_mem=10MB -c maintenance_work_mem=256MB -c max_connections=100"
+    env:
+      secret:
+        - POSTGRES_PASSWORD
+    directories:
+      - /data/pgdata:/var/lib/postgresql/data
+```
+
+The `.kamal/secrets.<destination>` file (agent-owned, one per environment):
+
+```
+POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+```
+
+The `cmd` values shown above are for a `medium` plan (4 GiB RAM). Use `generate_pg_cmd.py` to compute plan-specific tuning -- see [Tuning with `generate_pg_cmd.py`](#tuning-with-generate_pg_cmdpy).
+
+## The `-D /etc/postgresql` Flag
+
+Standard postgres Docker images use `-D /var/lib/postgresql/data` for the config directory. The `supabase/postgres` image is different: its configuration lives at `/etc/postgresql` and the data directory is separate.
+
+The `cmd` **must** include `-D /etc/postgresql`:
+
+```
+postgres -D /etc/postgresql -c shared_buffers=1GB ...
+```
+
+Without this flag, postgres will look for configuration in the wrong path and fail to start.
+
+## Volume Mount: `/data/pgdata`, Not `/data/`
+
+The host disk is mounted at `/data/` by the workflow. For accessories, always use Kamal `directories` (never named Docker volumes) — `/data/` is an attached disk with scheduled snapshot policies for disaster recovery, and only data under `/data/` is backed up. The ext4 filesystem also creates a `lost+found` directory at the mount root, so PostgreSQL's `initdb` fails if the data directory is not empty. For that reason, always bind-mount a **subdirectory**:
+
+```yaml
+accessories:
+  db:
+    directories:
+      - /data/pgdata:/var/lib/postgresql/data   # CORRECT -- clean subdirectory
+      # - /data:/var/lib/postgresql/data         # WRONG -- lost+found breaks initdb
+```
+
+## Container Env: Only `POSTGRES_PASSWORD`
+
+The `supabase/postgres` image only accepts `POSTGRES_PASSWORD` as a container environment variable. Do **not** pass `POSTGRES_USER` or `POSTGRES_DB` -- the image's internal init scripts bootstrap with user `postgres` and database `postgres` by default, and injecting these vars conflicts with that process.
+
+```yaml
+# CORRECT
+accessories:
+  db:
+    env:
+      secret:
+        - POSTGRES_PASSWORD
+
+# WRONG -- will conflict with supabase/postgres init
+accessories:
+  db:
+    env:
+      clear:
+        POSTGRES_USER: myuser      # DO NOT
+        POSTGRES_DB: mydb          # DO NOT
+      secret:
+        - POSTGRES_PASSWORD
+```
+
+## DATABASE_URL Derived from POSTGRES_PASSWORD
+
+`DATABASE_URL` is **not** a separate GitHub Secret. It is derived from `POSTGRES_PASSWORD` directly in the `.kamal/secrets` file. See [env-vars.md -- Database Connection Variables](env-vars.md#database-connection-variables) for how the app uses this variable:
+
+```
+POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+```
+
+Breakdown:
+- **User**: always `postgres` (the image bootstraps this; see above)
+- **Database**: always `postgres`
+- **Host**: `db` -- matches the accessory name. CloudStack DNS resolves it to the accessory VM's internal (private) IP within the isolated network
+- **Port**: `5432`
+
+The hostname `db` is deterministic (it matches the accessory name and VM name). The only GitHub Secret the user must create is:
+
+```
+POSTGRES_PASSWORD=<random password>
+```
+
+For non-preview environments, use the suffixed variable:
+
+```
+POSTGRES_PASSWORD=$POSTGRES_PASSWORD_PRODUCTION
+DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD_PRODUCTION}@db:5432/postgres
+```
+
+## Tuning with `generate_pg_cmd.py`
+
+The script at `scripts/generate_pg_cmd.py` computes plan-appropriate PostgreSQL tuning parameters. It encodes the plan-to-RAM mapping and produces a complete `postgres` command string.
+
+Usage:
+
+```bash
+mise x -- python3 scripts/generate_pg_cmd.py --plan <plan>
+```
+
+Example output for `--plan medium`:
+
+```
+postgres -D /etc/postgresql -c shared_buffers=1GB -c effective_cache_size=3GB -c work_mem=10MB -c maintenance_work_mem=256MB -c max_connections=100
+```
+
+The agent runs this script with the chosen plan and uses the output as the value for `accessories.db.cmd` in `config/deploy.<env>.yml`.
+
+### Tuning algorithm
+
+The script computes five PostgreSQL parameters from the plan's RAM:
+
+| Parameter | Formula | Notes |
+|---|---|---|
+| `shared_buffers` | RAM / 4 | Main memory cache for table/index data |
+| `effective_cache_size` | RAM * 3 / 4 | Planner hint for OS cache availability |
+| `work_mem` | max(RAM / max_connections / 4, 2MB) | Per-operation sort/hash memory |
+| `maintenance_work_mem` | min(RAM / 16, 2GB) | VACUUM, CREATE INDEX, etc. |
+| `max_connections` | 100 (<=4GB), 200 (<=16GB), 400 (>16GB) | Scaled by available memory |
+
+## Plan-to-RAM Mapping Table
+
+Each plan corresponds to a VM with a fixed amount of RAM (see [scaling.md -- VM Plans](scaling.md#vm-plans) for the full vCPU/memory table). The plan name determines how `generate_pg_cmd.py` tunes PostgreSQL:
+
+| Plan | RAM (MiB) |
+|---|---|
+| `micro` | 1024 |
+| `small` | 2048 |
+| `medium` | 4096 |
+| `large` | 8192 |
+| `xlarge` | 16384 |
+| `2xlarge` | 32768 |
+| `4xlarge` | 65536 |
+
+## Sync with Workflow
+
+The `accessories` workflow input is a JSON array. It must include an entry for the database accessory:
+
+```json
+[{"name": "db", "plan": "<chosen-plan>", "disk_size_gb": <size>}]
+```
+
+- **`name`**: must be `db` (matches the accessory name in `config/deploy.<env>.yml`)
+- **`plan`**: one of the plans from the table above. Determines the VM size and therefore the RAM available for PostgreSQL tuning
+- **`disk_size_gb`**: size of the data disk attached to the database VM (range: 10–4000 GB). This is the disk mounted at `/data/` where PostgreSQL stores its data (via the `/data/pgdata` subdirectory)
+
+Example for a medium plan with a 50 GB data disk:
+
+```json
+[{"name": "db", "plan": "medium", "disk_size_gb": 50}]
+```

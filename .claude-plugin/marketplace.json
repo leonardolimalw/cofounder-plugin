@@ -1,0 +1,14 @@
+{
+  "name": "locaweb",
+  "description": "Plugins da Locaweb para o Claude Code.",
+  "owner": {
+    "name": "Locaweb"
+  },
+  "plugins": [
+    {
+      "name": "cofounder",
+      "source": "./",
+      "description": "Um cofundador que ajuda a desenvolver e publicar aplicações web."
+    }
+  ]
+}
